@@ -28,7 +28,7 @@ node index.js <url>
 sites:
   - prefix: "https://hoohootv"
     targetRegEx: "https://creatorofvideo\\.com/.*/master\\.m3u8\\?t=0"
-    includeCookie: true
+    includeCookie: false
 ```
 
 | 필드 | 설명 | 기본값 |
