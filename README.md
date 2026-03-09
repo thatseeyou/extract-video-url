@@ -29,6 +29,7 @@ sites:
   - prefix: "https://hoohootv"
     targetRegEx: "https://creatorofvideo\\.com/.*/master\\.m3u8\\?t=0"
     includeCookie: false
+    concurrentFragments: 4
 ```
 
 | 필드 | 설명 | 기본값 |
@@ -36,6 +37,7 @@ sites:
 | `prefix` | 입력 URL이 이 문자열로 시작하면 해당 규칙 적용 | (필수) |
 | `targetRegEx` | 감지된 m3u8 URL이 이 정규식에 매치될 때만 yt-dlp 명령 생성 | (필수) |
 | `includeCookie` | yt-dlp 명령에 cookie 헤더 포함 여부 | `false` |
+| `concurrentFragments` | yt-dlp 동시 다운로드 fragment 수 (`-N` 옵션) | `1` |
 
 매치되는 규칙이 없으면 모든 m3u8에 대해 yt-dlp 명령을 생성한다.
 

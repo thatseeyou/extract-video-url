@@ -137,6 +137,9 @@ function buildYtDlpCommand(m3u8Url, headers, outputName) {
   const parsed = parseHeaders(headers);
   const parts = ['yt-dlp'];
 
+  const concurrentFragments = matchedSite?.concurrentFragments || 1;
+  parts.push(`-N ${concurrentFragments}`);
+
   if (outputName) {
     parts.push(`-o '${outputName}.%(ext)s'`);
   }
