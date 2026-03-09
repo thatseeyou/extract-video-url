@@ -1,0 +1,9 @@
+{
+  "name": "extract-video-url",
+  "version": "1.0.0",
+  "description": "CLI tool to detect m3u8 HLS video stream URLs from any web page",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  }
+}
