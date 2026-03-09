@@ -2,6 +2,7 @@ const { execSync, spawn } = require('node:child_process');
 const path = require('node:path');
 const os = require('node:os');
 const fs = require('node:fs');
+const yaml = require('js-yaml');
 
 const url = process.argv[2];
 
@@ -11,7 +12,24 @@ if (!url) {
   process.exit(1);
 }
 
+// Load sites.yaml and find matching site rule
+function loadMatchedSite(inputUrl) {
+  const sitesPath = path.join(__dirname, 'sites.yaml');
+  if (!fs.existsSync(sitesPath)) return null;
+  const config = yaml.load(fs.readFileSync(sitesPath, 'utf-8'));
+  if (!config?.sites) return null;
+  return config.sites.find((site) => inputUrl.startsWith(site.prefix)) || null;
+}
+
+const matchedSite = loadMatchedSite(url);
+if (matchedSite) {
+  console.log(`Matched site rule: prefix="${matchedSite.prefix}" targetRegEx="${matchedSite.targetRegEx}"`);
+} else {
+  console.log('No matching site rule found. All m3u8 URLs will generate yt-dlp commands.');
+}
+
 const detectedUrls = new Set();
+const ytDlpDir = path.join(__dirname, 'yt-dlp');
 
 function findChrome() {
   const candidates = [
@@ -115,9 +133,13 @@ function parseHeaders(headers) {
   return parsed;
 }
 
-function buildYtDlpCommand(m3u8Url, headers) {
+function buildYtDlpCommand(m3u8Url, headers, outputName) {
   const parsed = parseHeaders(headers);
   const parts = ['yt-dlp'];
+
+  if (outputName) {
+    parts.push(`-o '${outputName}.%(ext)s'`);
+  }
 
   // Headers that yt-dlp supports as dedicated flags
   if (parsed['referer']) {
@@ -128,6 +150,7 @@ function buildYtDlpCommand(m3u8Url, headers) {
   }
 
   // Add other meaningful headers via --add-header (skip browser-internal ones)
+  const includeCookie = matchedSite?.includeCookie === true;
   const skipHeaders = new Set([
     'host', 'referer', 'user-agent', 'connection', 'accept-encoding',
     'accept-language', 'accept', 'sec-fetch-dest', 'sec-fetch-mode',
@@ -136,6 +159,9 @@ function buildYtDlpCommand(m3u8Url, headers) {
     'dnt', 'upgrade-insecure-requests', 'cache-control', 'pragma',
     'priority',
   ]);
+  if (!includeCookie) {
+    skipHeaders.add('cookie');
+  }
 
   for (const [key, { name, value }] of Object.entries(parsed)) {
     if (skipHeaders.has(key)) continue;
@@ -146,10 +172,48 @@ function buildYtDlpCommand(m3u8Url, headers) {
   return parts.join(' \\\n  ');
 }
 
+function shouldShowYtDlp(m3u8Url) {
+  if (!matchedSite) return true;
+  return new RegExp(matchedSite.targetRegEx).test(m3u8Url);
+}
+
+function generateBaseName() {
+  const now = new Date();
+  const ts = now.getFullYear()
+    + '_' + String(now.getMonth() + 1).padStart(2, '0')
+    + '_' + String(now.getDate()).padStart(2, '0')
+    + 'T' + String(now.getHours()).padStart(2, '0')
+    + '_' + String(now.getMinutes()).padStart(2, '0')
+    + '_' + String(now.getSeconds()).padStart(2, '0');
+  let baseName = ts;
+  let counter = 2;
+  while (fs.existsSync(path.join(ytDlpDir, `${baseName}.sh`))) {
+    baseName = `${ts}-${counter}`;
+    counter++;
+  }
+  return baseName;
+}
+
+function writeScript(baseName, cmd) {
+  if (!fs.existsSync(ytDlpDir)) {
+    fs.mkdirSync(ytDlpDir, { recursive: true });
+  }
+  const filePath = path.join(ytDlpDir, `${baseName}.sh`);
+  const content = `#!/bin/bash\n# Source URL: ${url}\n\n${cmd}\n`;
+  fs.writeFileSync(filePath, content);
+  fs.chmodSync(filePath, 0o755);
+  console.log(`Script saved: ${filePath}`);
+}
+
 function printResults(results) {
   for (const { url: m3u8Url, headers } of results) {
+    const showCmd = shouldShowYtDlp(m3u8Url);
+
     console.log(`\n${'='.repeat(80)}`);
     console.log(`[m3u8] #${detectedUrls.size}: ${m3u8Url}`);
+    if (!showCmd && matchedSite) {
+      console.log(`  (skipped: does not match targetRegEx)`);
+    }
     console.log('='.repeat(80));
 
     if (headers && headers.length > 0) {
@@ -161,8 +225,13 @@ function printResults(results) {
       console.log('Request Headers: (not captured)');
     }
 
-    console.log('\nyt-dlp command:');
-    console.log(buildYtDlpCommand(m3u8Url, headers));
+    if (showCmd) {
+      const baseName = generateBaseName();
+      const cmd = buildYtDlpCommand(m3u8Url, headers, baseName);
+      console.log('\nyt-dlp command:');
+      console.log(cmd);
+      writeScript(baseName, cmd);
+    }
   }
 }
 
