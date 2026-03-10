@@ -25,7 +25,7 @@ const matchedSite = loadMatchedSite(url);
 if (matchedSite) {
   console.log(`Matched site rule: prefix="${matchedSite.prefix}" targetRegEx="${matchedSite.targetRegEx}"`);
 } else {
-  console.log('No matching site rule found. All m3u8 URLs will generate yt-dlp commands.');
+  console.log('No matching site rule found. All video URLs will generate yt-dlp commands.');
 }
 
 const detectedUrls = new Set();
@@ -79,12 +79,14 @@ function parseNetLog(logPath) {
     sourceEvents[srcId].push(evt);
   }
 
-  // Find m3u8 requests and their headers
+  // Find video requests and their headers
   const results = [];
 
   for (const [, evts] of Object.entries(sourceEvents)) {
     let requestUrl = null;
     let headers = null;
+    let responseContentType = null;
+    let responseHeaders = null;
 
     for (const evt of evts) {
       const typeName = eventTypeById[evt.type] || '';
@@ -105,11 +107,23 @@ function parseNetLog(logPath) {
           headers = params.headers;
         }
       }
+
+      // Find response headers and Content-Type
+      if (typeName === 'HTTP_TRANSACTION_READ_RESPONSE_HEADERS') {
+        if (params.headers) {
+          responseHeaders = params.headers;
+          const parsed = parseHeaders(params.headers);
+          if (parsed['content-type']) responseContentType = parsed['content-type'].value;
+        }
+      }
     }
 
-    if (requestUrl && requestUrl.includes('.m3u8') && !detectedUrls.has(requestUrl)) {
-      detectedUrls.add(requestUrl);
-      results.push({ url: requestUrl, headers });
+    if (requestUrl && !detectedUrls.has(requestUrl)) {
+      const format = detectVideoFormat(requestUrl, responseContentType);
+      if (format) {
+        detectedUrls.add(requestUrl);
+        results.push({ url: requestUrl, headers, responseHeaders, format });
+      }
     }
   }
 
@@ -120,6 +134,8 @@ function parseHeaders(headers) {
   const parsed = {};
   if (!headers) return parsed;
   for (const line of headers) {
+    // Skip HTTP response status line (e.g. "HTTP/1.1 200 OK")
+    if (line.startsWith('HTTP/')) continue;
     // Skip the request line (e.g. "GET /path HTTP/1.1")
     if (/^[A-Z]+ .+ HTTP\//.test(line)) continue;
     // Skip HTTP/2 pseudo-headers (e.g. ":path", ":method", ":authority", ":scheme")
@@ -133,7 +149,28 @@ function parseHeaders(headers) {
   return parsed;
 }
 
-function buildYtDlpCommand(m3u8Url, headers, outputName) {
+function detectVideoFormat(url, contentType) {
+  try {
+    const pathname = new URL(url).pathname.toLowerCase();
+    if (pathname.endsWith('.m3u8')) return 'hls';
+    if (pathname.endsWith('.mpd'))  return 'dash';
+    if (pathname.endsWith('.mp4'))  return 'mp4';
+    if (pathname.endsWith('.webm')) return 'webm';
+    if (pathname.endsWith('.ts'))   return 'ts';
+  } catch {}
+
+  if (!contentType) return null;
+  const ct = contentType.split(';')[0].trim().toLowerCase();
+  if (ct === 'application/x-mpegurl' || ct === 'application/vnd.apple.mpegurl') return 'hls';
+  if (ct === 'application/dash+xml') return 'dash';
+  if (ct === 'video/mp4')   return 'mp4';
+  if (ct === 'video/webm')  return 'webm';
+  if (ct === 'video/mp2t')  return 'ts';
+  if (ct.startsWith('video/')) return 'video';
+  return null;
+}
+
+function buildYtDlpCommand(videoUrl, headers, outputName) {
   const parsed = parseHeaders(headers);
   const parts = ['yt-dlp'];
 
@@ -171,13 +208,13 @@ function buildYtDlpCommand(m3u8Url, headers, outputName) {
     parts.push(`--add-header '${name}: ${value}'`);
   }
 
-  parts.push(`'${m3u8Url}'`);
+  parts.push(`'${videoUrl}'`);
   return parts.join(' \\\n  ');
 }
 
-function shouldShowYtDlp(m3u8Url) {
+function shouldShowYtDlp(videoUrl) {
   if (!matchedSite) return true;
-  return new RegExp(matchedSite.targetRegEx).test(m3u8Url);
+  return new RegExp(matchedSite.targetRegEx).test(videoUrl);
 }
 
 function generateBaseName() {
@@ -208,12 +245,15 @@ function writeScript(baseName, cmd) {
   console.log(`Script saved: ${filePath}`);
 }
 
+const FORMAT_LABELS = { hls: 'HLS', dash: 'DASH', mp4: 'MP4', webm: 'WEBM', ts: 'TS', video: 'VIDEO' };
+
 function printResults(results) {
-  for (const { url: m3u8Url, headers } of results) {
-    const showCmd = shouldShowYtDlp(m3u8Url);
+  for (const { url: videoUrl, headers, responseHeaders, format } of results) {
+    const showCmd = shouldShowYtDlp(videoUrl);
+    const label = FORMAT_LABELS[format] || format.toUpperCase();
 
     console.log(`\n${'='.repeat(80)}`);
-    console.log(`[m3u8] #${detectedUrls.size}: ${m3u8Url}`);
+    console.log(`[${label}] #${detectedUrls.size}: ${videoUrl}`);
     if (!showCmd && matchedSite) {
       console.log(`  (skipped: does not match targetRegEx)`);
     }
@@ -228,9 +268,18 @@ function printResults(results) {
       console.log('Request Headers: (not captured)');
     }
 
+    if (responseHeaders && responseHeaders.length > 0) {
+      console.log('Response Headers:');
+      for (const line of responseHeaders) {
+        console.log(`  ${line}`);
+      }
+    } else {
+      console.log('Response Headers: (not captured)');
+    }
+
     if (showCmd) {
       const baseName = generateBaseName();
-      const cmd = buildYtDlpCommand(m3u8Url, headers, baseName);
+      const cmd = buildYtDlpCommand(videoUrl, headers, baseName);
       console.log('\nyt-dlp command:');
       console.log(cmd);
       writeScript(baseName, cmd);
@@ -264,7 +313,7 @@ async function main() {
 
   console.log(`NetLog path: ${netLogPath}`);
   console.log(`Launching Chrome and navigating to: ${url}`);
-  console.log('Monitoring network requests for m3u8 URLs...');
+  console.log('Monitoring network requests for video URLs...');
   console.log('Play the video manually. Close the browser window when done.\n');
 
   const chromeProcess = spawn(chromePath, [
@@ -299,9 +348,9 @@ async function main() {
 
   console.log('\n' + '='.repeat(80));
   if (detectedUrls.size === 0) {
-    console.log('No m3u8 URLs were detected.');
+    console.log('No video URLs were detected.');
   } else {
-    console.log(`Done. Detected ${detectedUrls.size} unique m3u8 URL(s).`);
+    console.log(`Done. Detected ${detectedUrls.size} unique video URL(s).`);
   }
 }
 
