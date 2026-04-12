@@ -305,7 +305,7 @@ async function main() {
     process.exit(1);
   }
 
-  const userDataDir = path.join(os.tmpdir(), 'extract-video-url-profile');
+  const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'extract-video-url-profile-'));
   const netLogPath = path.join(os.tmpdir(), 'extract-video-url-netlog.json');
 
   // Clean up old netlog
@@ -343,8 +343,9 @@ async function main() {
   // Final scan
   scanNetLog(netLogPath);
 
-  // Clean up netlog file
+  // Clean up netlog file and temp profile
   try { fs.unlinkSync(netLogPath); } catch {}
+  try { fs.rmSync(userDataDir, { recursive: true, force: true }); } catch {}
 
   console.log('\n' + '='.repeat(80));
   if (detectedUrls.size === 0) {

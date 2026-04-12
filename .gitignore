@@ -1,3 +1,5 @@
 node_modules/
 yt-dlp/
 .DS_Store
+
+.vscode/settings.json
